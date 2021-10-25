@@ -10,7 +10,7 @@ http://www.tech-mash.narod.ru/
 {
 Added By Me:
 TFreeBitmap.ConvertToRawBits, RescaleRect, Rescale,SwapChannels,SwapRedBlue,
-CreateBitmaps, LoadFromFile
+CreateBitmaps, LoadFromFile, FromMultiImage
 modified TFreeMultiBitmap.Create,Destroy,LoadFromStream,Rotate,SaveToStream,
 GetLockedPageNumbers,IsPageLocked,GetLockedCount
 look for more...}
@@ -104,9 +104,8 @@ type
     FDib: PFIBITMAP;
     FOnChange: TNotifyEvent;
     FOnChanging: TFreeBitmapChangingEvent;
-    FLockedNumber:integer;//replace to FFromMultipage
+    //FLockedNumber:integer;//replace to FFromMultipage
     FFromMultipage:TFreeMultiBitmap;//by me unlocked pages should to be different
-
     procedure SetDib(Value: PFIBITMAP);
   protected
     function DoChanging(var OldDib, NewDib: PFIBITMAP): Boolean; dynamic;
@@ -225,8 +224,10 @@ type
     {$IFDEF LCL}
     function CreateBitmaps(out ABitmap, AMask: HBitmap; ASkipMask: Boolean = False): Boolean;
     {$ENDIF}
+
+    function FromMultiImage:boolean;
     // properties
-    property LockedNumber:integer read FLockedNumber;
+    //property LockedNumber:integer read FLockedNumber;
     property Dib: PFIBITMAP read FDib write SetDib;
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
     property OnChanging: TFreeBitmapChangingEvent read FOnChanging write FOnChanging;
@@ -797,7 +798,8 @@ constructor TFreeBitmap.Create(ImageType: FREE_IMAGE_TYPE; Width, Height,
   Bpp: Integer);
 begin
   inherited Create;
-  FLockedNumber:=NoPageNumber;
+  //FLockedNumber:=NoPageNumber;
+  FFromMultipage:=nil;
   FDib := nil;
   if (Width > 0) and (Height > 0) and (Bpp > 0) then
     SetSize(ImageType, Width, Height, Bpp);
@@ -1753,6 +1755,8 @@ Result := Dest.Replace(NewDib);
 if not result then FreeImage_Unload(NewDib);
 end;
 
+function TFreeBitmap.FromMultiImage:boolean;
+begin result:=FFromMultipage<>nil;end;
 
 {$IFDEF LCL}
 function TFreeBitmap.CreateBitmaps(out ABitmap, AMask: HBitmap; ASkipMask: Boolean = False): Boolean;
@@ -2014,7 +2018,7 @@ begin
     //IFormat:=fif;
     // load the file
     FMPage := MemIO.ReadMultiBitmap(fif, Flag);
-     //не всё отработано в чтении из памяти для multi
+     //РЅРµ РІСЃС‘ РѕС‚СЂР°Р±РѕС‚Р°РЅРѕ РІ С‡С‚РµРЅРёРё РёР· РїР°РјСЏС‚Рё РґР»СЏ multi
     Result := IsValid;
   end else
     Result := False;
@@ -2051,7 +2055,7 @@ end;
 
 function TFreeMultiBitmap.SaveToMemory(fif: FREE_IMAGE_FORMAT;MemIO:TFreeMemoryIO; flags: Integer=0): Boolean;
 begin
-{//Проверки как на freebitmap}
+{//РџСЂРѕРІРµСЂРєРё РєР°Рє РЅР° freebitmap}
 result:=MemIO.WriteMultiBitmap(fif,FMPage,flags);
 end;
 
@@ -2078,13 +2082,15 @@ n:integer;
 begin
 result:=false;
 if (Bitmap=nil)or(Bitmap.IsValid=false)or(IsValid=false)then exit;
-if Bitmap.LockedNumber<0 then exit;
+if Bitmap.FromMultiImage=false then exit;
 FreeImage_UnlockPage(FMPage, Bitmap.FDib, Changed);
 //LockedPages[Bitmap.LockedNumber]:=nil;
 // clear the image so that it becomes invalid.
 // don't use Bitmap.Clear method because it calls FreeImage_Unload
 // just clear the pointer
-Bitmap.FDib := nil;Bitmap.FLockedNumber:=NoPageNumber;
+Bitmap.FDib := nil;
+Bitmap.FFromMultipage:=nil;
+//Bitmap.FLockedNumber:=NoPageNumber;
 Bitmap.Change;
 result:=true;
 end;
@@ -2450,7 +2456,8 @@ end else begin
   DestBitmap.Replace(cached.ModifiedImage);
   cached.ModifiedIsLocked:=true;
 end;
-DestBitmap.FLockedNumber:=Page;
+//DestBitmap.FLockedNumber:=Page;
+DestBitmap.FFromMultipage:=self;
 end;
 
 function TCachedFreeMultiBitmap.Replace(Page: Integer; Bitmap: TFreeBitmap): Boolean;
@@ -2502,7 +2509,7 @@ Clone:PFIBITMAP;
 begin
 result:=false;
 if (Bitmap=nil)or(Bitmap.IsValid=false)or(IsValid=false)then exit;
-if Bitmap.LockedNumber<0 then exit;//был не с нашего района
+if Bitmap.FromMultiImage=false then exit;//Р±С‹Р» РЅРµ СЃ РЅР°С€РµРіРѕ СЂР°Р№РѕРЅР°
 cachedIndex:=-1;
 for n:=0 to CacheList.Count-1 do begin
   cached:=CacheElement(n);
@@ -2510,7 +2517,7 @@ for n:=0 to CacheList.Count-1 do begin
     cachedIndex:=n;break;
   end;
 end;
-if cachedIndex<0 then exit;//не с нашего района
+if cachedIndex<0 then exit;//РЅРµ СЃ РЅР°С€РµРіРѕ СЂР°Р№РѕРЅР°
 
 if cached.ModifiedImage=Bitmap.FDib then begin
   cached.ModifiedIsLocked:=false;
