@@ -1,269 +1,160 @@
-unit ThreadSQueue;{//rename to CPUThreadSQueue}
+unit WaitingThread;
 
 {$mode objfpc}{$H+}
-{$ASSERTIONS ON}
+
 interface
 
 uses
-  Classes, {SysUtils,}MTPCPU{from package multithreadprocslaz},WaitingThread;
+  Classes{, SysUtils};
+
 type
-PExecuteInThreadParametrs=^TExecuteInThreadParametrs;
-
-TTaskNotifyCallBackToObj = Procedure(ATask:PExecuteInThreadParametrs; AData : Pointer)of object;
-TTaskNotifyCallBack = Procedure(ATask:PExecuteInThreadParametrs; AData : Pointer);
-TThreadExecuteCallbackToObj=procedure(AData : Pointer) of object;
-
-TExecuteInThreadParametrs = record
- Data:Pointer;//user set data
- RunnedThread:Tthread;//service info
- //AllowParallel,AllowFlush:boolean;//User Help flag, not used in this unit, all tasks start according MaxActiveThreads
-// TaskCustomer:Tobject;//user set help info
- case Obj:boolean of //service info
- false:(DataHandlerMethod:TThreadExecuteCallback;//user set method
-        TaskCallBack:TTaskNotifyCallBack);//user set method to be notified
- true:(
-       DataHandlerMethodToObj:TThreadExecuteCallbackToObj;//user set method
-       TaskCallBackToObj:TTaskNotifyCallBackToObj//user set method of object to be notified
-       );
+TWaitingThread = class;
+TWaitingThreadlist=class(TFPList)
+protected
+    function Get(Index: Integer): TWaitingThread;
+    procedure Put(Index: Integer; Item: TWaitingThread);
+public
+    function Last: TWaitingThread;
+    property Items[Index: Integer]: TWaitingThread read Get write Put; default;
 end;
 
+TNotifyMethod = procedure(Sender: TObject);
 
+TWaitingThread = class(TThread)
+  private
+    FEvent:PRTLEvent;
+    FExecuteMethod: TThreadExecuteCallBack;
+    FOnExecEnd : TNotifyCallBack;
+    FData: Pointer;
+    FworkDone:boolean;
+    function GetWaitingStatus:boolean;
+    procedure CallOnTerminate;
+  protected
+    procedure Execute; override;
+    procedure WaitEvent;
+    procedure SetEvent;
+    procedure SyncCall;
+    procedure DoTerminate;override;
+  public
+    OnTerminateMethod:TNotifyCallBack;
+    Constructor Create(CreateSuspended: Boolean=false;const StackSize: SizeUInt = DefaultStackSize;
+                                  AFreeOnTerminate:boolean=true);
+    destructor Destroy; override;
+    function ExecuteInThread(AMethod : TThreadExecuteCallback; AData : Pointer = Nil;
+                              AOnExecEnd: TNotifyCallBack = Nil):boolean;
+    procedure WaitForWorkDone;
+    procedure EndWork;
+    property ReadyToExecute:boolean read GetWaitingStatus;
+    property Data : Pointer read FData write FData;
+    property ExecuteMethod: TThreadExecuteCallBack read FExecuteMethod write FExecuteMethod;
+end;
 
-
-function BuildTask(ATaskCustomer:Tobject;ADataHandlerMethod:TThreadExecuteCallbackToObj;AData:Pointer;
-                 ATaskCallBack:TTaskNotifyCallBackToObj):PExecuteInThreadParametrs;overload;
-function BuildTask(ADataHandlerMethod:TThreadExecuteCallback;AData:Pointer;
-                 ATaskCallBack:TTaskNotifyCallBack):PExecuteInThreadParametrs;overload;
-
-function AddTask(ADataHandlerMethod:TThreadExecuteCallback;AData:Pointer;ATaskCallBack:TTaskNotifyCallBack):
-         PExecuteInThreadParametrs;overload;
-function AddTask(ATaskCustomer:Tobject;ADataHandlerMethod:TThreadExecuteCallbackToObj;AData:Pointer;ATaskCallBack:TTaskNotifyCallBackToObj):
-         PExecuteInThreadParametrs;overload;
-function AddTask(ATask:PExecuteInThreadParametrs):boolean;overload;
-
-function TaskRunned(ATask:PExecuteInThreadParametrs):boolean;
-
-procedure SetMaxActiveThreadsNow(N:word);
-
-procedure SetMaxActiveThreadsAuto;
-
-function GetMaxActiveThreads:word;
-
-procedure NotifyTaskExecuted(EndedTask:PExecuteInThreadParametrs);
-
-
-var RunnedTaskList,TaskList:TList;
-  ConsiderMainThread:boolean=true;
 
 implementation
 
-var //MaxActiveThreads:shortint;
-ThreadArray:array of TWaitingThread;
-
-procedure CheckQueue;forward;
-
-procedure SetThreadArrayCount(Newcount:word);
-var count:word;
+function TWaitingThreadlist.Get(Index: Integer): TWaitingThread;
 begin
-count:=length(ThreadArray);
-if Newcount=count then exit;
-
-if Newcount<count then begin
-  repeat
-    ThreadArray[count-1].EndWork;
-    count:=count-1;
-  until (Newcount=count);
-  setlength(ThreadArray,Newcount);
-end else begin
-  setlength(ThreadArray,Newcount);
-  repeat
-    ThreadArray[count]:=TWaitingThread.Create();
-    count:=count+1;
-  until (Newcount=count);
-end;
+Result:=TWaitingThread(inherited);
 end;
 
-procedure SetMaxActiveThreadsNow(N:word);
+procedure TWaitingThreadlist.Put(Index: Integer; Item: TWaitingThread);
 begin
-SetThreadArrayCount(n);
-assert(n>0,'Threads count is 0, mean no one tasks in ThreadSQueue will run');
-CheckQueue;
+inherited put(Index,Item);
 end;
 
-procedure SetMaxActiveThreadsAuto;
-var Newcount:integer;
+function TWaitingThreadlist.Last: TWaitingThread;
 begin
-Newcount:=GetSystemThreadCount;
-if Newcount<1 then Newcount:=1;
-if ConsiderMainThread then Newcount:=Newcount-1;
-SetMaxActiveThreadsNow(Newcount);
+result:=TWaitingThread(inherited);
 end;
 
-function GetMaxActiveThreads:word;
+
+Constructor TWaitingThread.Create(CreateSuspended: Boolean=false;
+                                  const StackSize: SizeUInt = DefaultStackSize;
+                                  AFreeOnTerminate:boolean=true);
 begin
-result:=//MaxActiveThreads;
-length(ThreadArray);
+FEvent:=RTLEventCreate;
+RTLEventResetEvent(Fdata);
+FreeOnTerminate:=AFreeOnTerminate;
+FExecuteMethod:=nil;
+FOnExecEnd:=nil;
+FData:=nil;
+inherited create(CreateSuspended,StackSize);
 end;
 
-function GetFreeThread:TWaitingThread;
-var n,c:byte;//as SetMaxActiveThreadsNow parametr
+destructor TWaitingThread.Destroy;
 begin
-result:=nil;n:=0;
-c:=length(ThreadArray);
-while(result=nil)and(n<c)do begin
-if ThreadArray[n].ReadyToExecute then result:=ThreadArray[n];
-n:=n+1;
-end;
+RTLEventDestroy(FEvent);
+inherited Destroy;
 end;
 
-function LeaveList(item:pointer;List:TList):boolean;
+procedure TWaitingThread.Execute;
 begin
-result:=List.Remove(item)>-1;
-end;
-
-procedure ExecuteCallback(ATask : Pointer);//сюда приходит PExecuteInThreadParametrs, см. RunTask и TthreadEnd
-var Task:PExecuteInThreadParametrs;
-begin
-Task:=ATask;
-if Task^.Obj then Task^.DataHandlerMethodToObj(Task^.Data)
-else Task^.DataHandlerMethod(Task^.Data);
-end;
-
-procedure TthreadEndExecution(Sender : TObject; Done :Pointer);
-var EndedTask:PExecuteInThreadParametrs;
-begin
-EndedTask:=Done;
-LeaveList(EndedTask,RunnedTaskList);
-NotifyTaskExecuted(EndedTask);
-dispose(EndedTask);
-CheckQueue;
-end;
-
-procedure NotifyTaskExecuted(EndedTask:PExecuteInThreadParametrs);
-begin
-if (EndedTask^.Obj)then begin
-      if assigned(EndedTask^.TaskCallBackToObj) then
-        EndedTask^.TaskCallBackToObj(EndedTask,EndedTask^.Data);
-    end else begin
-      if (assigned(EndedTask^.TaskCallBack))then
-        EndedTask^.TaskCallBack(EndedTask,EndedTask^.Data);
-    end;
-end;
-
-function TaskDataHandlerMethodIsNil(Task:PExecuteInThreadParametrs):boolean;
-begin
-if Task^.Obj then
-  result:=TMethod(Task^.DataHandlerMethodToObj).Data=nil
-else
-  result:=Task^.DataHandlerMethod=nil;
-end;
-
-function RunTaskInThread(Task:PExecuteInThreadParametrs;WorkerThread:TWaitingThread):boolean;
-begin
-//check if task DataHandlerMethod is nil - then nothing to run:
-if TaskDataHandlerMethodIsNil(Task)then begin
-  TthreadEndExecution(nil,Task);
-end else begin// run in thread
-  //здесь подмена задания! см, ExecuteCallback и TthreadEndExecution
-  result:=WorkerThread.ExecuteInThread(@ExecuteCallback,Task,@TthreadEndExecution);
-  if result then begin
-    Task^.RunnedThread:=WorkerThread;
-    LeaveList(Task,TaskList);
-    RunnedTaskList.Add(Task);
-  end;
-end;
-
-end;
-
-procedure CheckQueue;
-var WorkerThread:TWaitingThread;
-FailStart:boolean;
-begin
-{Here can add analyse of waiting tasks: if TaskList.Count>1, this mean that all thread busy.
- And if limit of thread not reached, we can add thread to work.
- If it will implement, then need to realise(?) threads count decrease(?) }
-
 repeat
-  FailStart:=true;
-  if (TaskList.Count>0) then begin
-    WorkerThread:=GetFreeThread;
-    if WorkerThread<>nil then
-      FailStart:=not RunTaskInThread(TaskList.Items[0],WorkerThread);
+  WaitEvent;//Wait to get or set FExecuteMethod, Fdata
+  if FExecuteMethod<>nil then begin
+    FExecuteMethod(Fdata);
+    Queue(@SyncCall);//Thread will fall down if exception in main thread
+    //Synchronize(TThreadMethod(@SyncCall));//Thread will fall down if exception in main thread
   end;
-until FailStart;
+until Terminated;
 end;
 
-function AddTask(ADataHandlerMethod:TThreadExecuteCallback;AData:Pointer;ATaskCallBack:TTaskNotifyCallBack):PExecuteInThreadParametrs;overload;
-var NewTaskParameters:PExecuteInThreadParametrs;
+procedure TWaitingThread.SyncCall;
 begin
-NewTaskParameters:=BuildTask(ADataHandlerMethod,AData,ATaskCallBack);
-TaskList.Add(NewTaskParameters);
-result:=NewTaskParameters;
-CheckQueue;
+if FOnExecEnd<>nil then
+  FOnExecEnd(self,{SyncCallData}Fdata);
 end;
 
-function AddTask(ATaskCustomer:Tobject;ADataHandlerMethod:TThreadExecuteCallbackToObj;AData:Pointer;
-                 ATaskCallBack:TTaskNotifyCallBackToObj):PExecuteInThreadParametrs;overload;
-var NewTaskParameters:PExecuteInThreadParametrs;
+procedure TWaitingThread.SetEvent;
 begin
-NewTaskParameters:=BuildTask(ATaskCustomer,ADataHandlerMethod,AData,ATaskCallBack);
-TaskList.Add(NewTaskParameters);
-result:=NewTaskParameters;
-CheckQueue;
+RTLeventSetEvent(FEvent);
 end;
 
-function AddTask(ATask:PExecuteInThreadParametrs):boolean;overload;
+procedure TWaitingThread.WaitEvent;
 begin
-if ATask=nil then exit(false)
-else result:=true;
-TaskList.Add(ATask);
-CheckQueue;
+FworkDone:=true;
+RTLEventWaitFor(FEvent);
+RTLEventResetEvent(Fdata);
+FworkDone:=false;
 end;
 
-function TaskRunned(ATask:PExecuteInThreadParametrs):boolean;
+function TWaitingThread.GetWaitingStatus:boolean;
 begin
-  result:=(RunnedTaskList.IndexOf(ATask)>-1)or(ATask^.RunnedThread<>nil);
+result:=FExecuteMethod=nil;
 end;
 
-function BuildTask(ATaskCustomer:Tobject;ADataHandlerMethod:TThreadExecuteCallbackToObj;AData:Pointer;
-                 ATaskCallBack:TTaskNotifyCallBackToObj):PExecuteInThreadParametrs;overload;
-var NewTaskParameters:PExecuteInThreadParametrs;
+procedure TWaitingThread.WaitForWorkDone;
 begin
-//if ADataHandlerMethod=nil then see RunTaskInThread;
-new(NewTaskParameters);
-with NewTaskParameters^ do begin
-  Obj:=true;
-  DataHandlerMethodToObj:=ADataHandlerMethod;
-  Data:=AData;
-  TaskCallBackToObj:=ATaskCallBack;
-  //TaskCustomer:=ATaskCustomer;
-  //Default values:
-  //AllowParallel:=false;
-  RunnedThread:=nil;
-end;
-result:=NewTaskParameters;
+while (not FworkDone)do
+ CheckSynchronize(500);
 end;
 
-function BuildTask(ADataHandlerMethod:TThreadExecuteCallback;AData:Pointer;
-                 ATaskCallBack:TTaskNotifyCallBack):PExecuteInThreadParametrs;overload;
-var NewTaskParameters:PExecuteInThreadParametrs;
+procedure TWaitingThread.EndWork;
 begin
-//if ADataHandlerMethod=nil then see RunTaskInThread;
-new(NewTaskParameters);
-with NewTaskParameters^ do begin
-  DataHandlerMethod:=ADataHandlerMethod;Data:=AData;TaskCallBack:=ATaskCallBack;
-  Obj:=false;
-  //Default values:
-  //AllowParallel:=false;
-  RunnedThread:=nil;
-  //TaskCustomer:=nil;
-end;
-result:=NewTaskParameters;
+Terminate;
+SetEvent;
 end;
 
+procedure TWaitingThread.DoTerminate;
 begin
-TaskList:=TList.Create;
-RunnedTaskList:=TList.Create;
-SetMaxActiveThreadsAuto;
+  Synchronize(@CallOnTerminate);
+end;
+
+procedure TWaitingThread.CallOnTerminate;
+begin
+  if Assigned(OnTerminateMethod)then
+    OnTerminateMethod(Self,Fdata);
+end;
+
+function TWaitingThread.ExecuteInThread(AMethod : TThreadExecuteCallback; AData : Pointer = Nil;
+                              AOnExecEnd: TNotifyCallBack = Nil):boolean;
+begin
+result:=ReadyToExecute and (AMethod<>nil);
+if not result then exit;
+FExecuteMethod := AMethod;
+FOnExecEnd := AOnExecEnd;
+FData:=AData;
+SetEvent;
+end;
+
 end.
-
