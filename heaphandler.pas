@@ -25,6 +25,12 @@ class operator Initialize(var O:TVariableHandler);inline;
 class operator  Finalize(var O:TVariableHandler);inline;
 end;
 
+generic TObjectHandlerCreater<T>=record
+Heap:T;
+class operator Initialize(var O:TObjectHandlerCreater);inline;
+class operator  Finalize(var O:TObjectHandlerCreater);inline;
+end;  
+
 implementation
 
 class operator  TObjectHandler.Initialize(var O:TObjectHandler);inline;
@@ -45,6 +51,16 @@ end;
 class operator  TVariableHandler.Finalize(var O:TVariableHandler);inline;
 begin
 dispose(O.Heap);
+end;
+
+class operator  TObjectHandlerCreater.Initialize(var O:TObjectHandlerCreater);inline;
+begin
+O.Heap:=T.create;
+end;
+
+class operator  TObjectHandlerCreater.Finalize(var O:TObjectHandlerCreater);inline;
+begin
+O.Heap.Free;
 end;
 
 end.
